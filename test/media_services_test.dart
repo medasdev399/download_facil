@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:download_facil/models/conversion_item.dart';
 import 'package:download_facil/models/download_item.dart';
 import 'package:download_facil/services/ffmpeg_service.dart';
+import 'package:download_facil/services/media_detector_service.dart';
 import 'package:download_facil/services/youtube_service.dart';
 
 void main() {
@@ -39,6 +40,73 @@ void main() {
         YouTubeService.isYouTubeUrl('https://example.com/video.mp4'),
         isFalse,
       );
+    });
+  });
+
+  group('MediaDetectorService', () {
+    test('identifies direct media URLs', () {
+      expect(MediaDetectorService.isDirectMediaUrl('https://example.com/video.mp4'), isTrue);
+      expect(MediaDetectorService.isDirectMediaUrl('https://example.com/stream.m3u8?token=123'), isTrue);
+      expect(MediaDetectorService.isDirectMediaUrl('https://example.com/music.mp3'), isTrue);
+      expect(MediaDetectorService.isDirectMediaUrl('https://example.com/index.html'), isFalse);
+    });
+
+    test('identifies Blogger player URLs', () {
+      expect(MediaDetectorService.isBloggerUrl('https://www.blogger.com/video.g?token=XYZ'), isTrue);
+      expect(MediaDetectorService.isBloggerUrl('https://www.blogger.com/video-redirect.g?token=XYZ'), isTrue);
+      expect(MediaDetectorService.isBloggerUrl('https://example.com/page'), isFalse);
+    });
+
+    test('cleanTitle strips site promotional noise', () {
+      expect(
+        MediaDetectorService.cleanTitle('Overlord 2 Episodio 1 Online - Animes Online'),
+        equals('Overlord 2 Episodio 1'),
+      );
+      expect(
+        MediaDetectorService.cleanTitle('Naruto Shippuden 01 - Animes Online Grátis'),
+        equals('Naruto Shippuden 01'),
+      );
+      expect(
+        MediaDetectorService.cleanTitle('Filme Completo - Assistir Filmes Online HD'),
+        equals('Filme Completo'),
+      );
+    });
+
+    test('sniffHtml extracts direct video and audio elements', () {
+      const html = '''
+        <html>
+          <head>
+            <meta property="og:title" content="Teste Vídeo HD" />
+            <meta property="og:image" content="https://example.com/thumb.jpg" />
+          </head>
+          <body>
+            <video src="https://example.com/video1080.mp4"></video>
+            <source src="/media/audio_sample.mp3" />
+          </body>
+        </html>
+      ''';
+
+      final detected = MediaDetectorService.sniffHtml(html, 'https://example.com/page.html');
+      expect(detected, isNotNull);
+      expect(detected!.title, equals('Teste Vídeo HD'));
+      expect(detected.thumbnailUrl, equals('https://example.com/thumb.jpg'));
+      expect(detected.videoFormats.any((f) => f.streamId?.contains('video1080.mp4') == true), isTrue);
+      expect(detected.audioFormats.any((f) => f.streamId?.contains('audio_sample.mp3') == true), isTrue);
+    });
+
+    test('sniffHtml extracts JS player configuration streams', () {
+      const html = '''
+        <script>
+          var player = new Player({
+            file: "https://streaming.cdn.example/live/stream.m3u8"
+          });
+        </script>
+      ''';
+
+      final detected = MediaDetectorService.sniffHtml(html, 'https://example.com/');
+      expect(detected, isNotNull);
+      expect(detected!.videoFormats.any((f) => f.streamId?.contains('stream.m3u8') == true), isTrue);
+      expect(detected.videoFormats.first.qualityTag, equals('HLS'));
     });
   });
 
@@ -81,4 +149,3 @@ void main() {
     });
   });
 }
-

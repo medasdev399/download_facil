@@ -1,3 +1,8 @@
+/// Download Fácil
+/// Gerenciador de downloads multithread, extrator e conversor de mídia.
+/// Desenvolvedor: Gabriel Moreno Medeiros
+/// Versão: 1.1.0
+
 import 'package:flutter/material.dart';
 import 'services/log_service.dart';
 import 'ui/home_page.dart';

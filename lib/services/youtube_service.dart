@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:dio/dio.dart';
+import 'package:path/path.dart' as p;
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import '../models/download_item.dart';
+import '../models/media_format_option.dart';
 import 'ffmpeg_service.dart';
 import 'log_service.dart';
 
@@ -79,6 +81,123 @@ class YouTubeService {
     return parseVideoId(url) != null;
   }
 
+  /// Detecta metadados e todos os formatos e qualidades de vídeo e áudio disponíveis
+  static Future<DetectedMediaInfo?> fetchDetectedMedia(String url) async {
+    final videoId = parseVideoId(url);
+    if (videoId == null) return null;
+
+    LogService.info('Detectando opções de vídeo e áudio do YouTube: ${videoId.value}', tag: 'YouTube');
+    try {
+      final video = await _yt.videos.get(videoId);
+      final manifest = await _yt.videos.streamsClient.getManifest(videoId);
+
+      final audioStream = manifest.audioOnly.isNotEmpty
+          ? manifest.audioOnly.withHighestBitrate()
+          : null;
+      final audioBytes = audioStream?.size.totalBytes ?? 0;
+
+      // Agrupa opções de vídeo por qualidade (1080p, 720p, 480p, 360p, 240p, 144p)
+      final videoOptions = <MediaFormatOption>[];
+      final seenQualities = <String>{};
+
+      final sortedVideos = manifest.video.toList()
+        ..sort((a, b) => b.videoResolution.height.compareTo(a.videoResolution.height));
+
+      for (final s in sortedVideos) {
+        final qName = s.videoQuality.name;
+        if (qName.isEmpty || seenQualities.contains(qName)) continue;
+        seenQualities.add(qName);
+
+        final height = s.videoResolution.height;
+        String qualityLabel = qName;
+        if (height >= 1080) {
+          qualityLabel = '$qName (Full HD)';
+        } else if (height >= 720) {
+          qualityLabel = '$qName (HD)';
+        } else if (height >= 480) {
+          qualityLabel = '$qName (SD)';
+        }
+
+        final isMuxed = s is MuxedStreamInfo;
+        final totalEstBytes = isMuxed ? s.size.totalBytes : (s.size.totalBytes + audioBytes);
+
+        videoOptions.add(MediaFormatOption(
+          label: qualityLabel,
+          extension: 'mp4',
+          category: MediaCategory.video,
+          qualityTag: qName,
+          totalBytes: totalEstBytes,
+          codecInfo: s.container.name.toUpperCase(),
+          streamId: s.tag.toString(),
+          rawStreamInfo: s,
+        ));
+      }
+
+      // Opções de áudio com bitrate e formatos
+      final durSec = video.duration?.inSeconds ?? 180;
+      final audioOptions = <MediaFormatOption>[
+        MediaFormatOption(
+          label: 'MP3 - 320 kbps (Alta Qualidade)',
+          extension: 'mp3',
+          category: MediaCategory.audio,
+          qualityTag: '320k',
+          totalBytes: (durSec * 320 * 1024) ~/ 8,
+          codecInfo: 'MP3 LAME',
+        ),
+        MediaFormatOption(
+          label: 'MP3 - 192 kbps (Padrão)',
+          extension: 'mp3',
+          category: MediaCategory.audio,
+          qualityTag: '192k',
+          totalBytes: (durSec * 192 * 1024) ~/ 8,
+          codecInfo: 'MP3 LAME',
+        ),
+        MediaFormatOption(
+          label: 'MP3 - 128 kbps (Econômico)',
+          extension: 'mp3',
+          category: MediaCategory.audio,
+          qualityTag: '128k',
+          totalBytes: (durSec * 128 * 1024) ~/ 8,
+          codecInfo: 'MP3 LAME',
+        ),
+        MediaFormatOption(
+          label: 'M4A / AAC (Original do YouTube)',
+          extension: 'm4a',
+          category: MediaCategory.audio,
+          qualityTag: 'original',
+          totalBytes: audioBytes > 0 ? audioBytes : (durSec * 128 * 1024) ~/ 8,
+          codecInfo: 'AAC Nativo',
+        ),
+        MediaFormatOption(
+          label: 'WAV (Sem Perdas)',
+          extension: 'wav',
+          category: MediaCategory.audio,
+          qualityTag: 'pcm',
+          totalBytes: (durSec * 1411 * 1024) ~/ 8,
+          codecInfo: 'PCM 16-bit',
+        ),
+      ];
+
+      final thumb = video.thumbnails.highResUrl.isNotEmpty
+          ? video.thumbnails.highResUrl
+          : video.thumbnails.mediumResUrl;
+
+      return DetectedMediaInfo(
+        url: url,
+        title: video.title,
+        author: video.author,
+        duration: video.duration,
+        thumbnailUrl: thumb,
+        videoFormats: videoOptions,
+        audioFormats: audioOptions,
+        isYouTube: true,
+      );
+    } catch (e, stack) {
+      LogService.error('Erro ao detectar mídia do YouTube: $e', tag: 'YouTube', error: e, stackTrace: stack);
+      rethrow;
+    }
+  }
+
   /// Busca os metadados do vídeo do YouTube para pré-visualização
   static Future<YouTubeMediaInfo?> fetchInfo(String url) async {
     final videoId = parseVideoId(url);
@@ -128,7 +247,7 @@ class YouTubeService {
     }
   }
 
-  /// Baixa uma faixa de áudio (música) do YouTube com suporte a conversão automática para MP3
+  /// Baixa uma faixa de áudio (música) do YouTube com suporte a conversão automática para MP3/M4A/WAV
   static Future<void> downloadAudio(
     DownloadItem item, {
     required void Function() onUpdate,
@@ -142,7 +261,7 @@ class YouTubeService {
     LogService.info('Iniciando fluxo de áudio YouTube para: ${item.fileName}', tag: 'YouTube');
 
     try {
-      final videoId = VideoId(item.url);
+      final videoId = parseVideoId(item.url) ?? VideoId(item.url);
       final manifest = await _yt.videos.streamsClient.getManifest(videoId);
       final audioStream = manifest.audioOnly.withHighestBitrate();
 
@@ -195,20 +314,32 @@ class YouTubeService {
         raf = null;
         speedTimer.cancel();
 
-        // Conversão para MP3 se solicitado ou cópia para o caminho final
-        if (item.savePath.toLowerCase().endsWith('.mp3') && hasFFmpeg) {
+        // Determina o formato de destino
+        String targetFmt = item.targetFormat ?? p.extension(item.savePath).replaceFirst('.', '').toLowerCase();
+        if (targetFmt.isEmpty) targetFmt = 'mp3';
+        final bitrate = item.audioBitrate ?? '320k';
+
+        // Conversão com FFmpeg se formato for diferente ou necessitar MP3
+        final isM4aOriginal = (targetFmt == 'm4a' || targetFmt == 'aac') && audioStream.container.name.toLowerCase() == 'mp4';
+
+        if (isM4aOriginal) {
+          LogService.info('Áudio original nativo preservado sem recodificação: ${item.savePath}', tag: 'YouTube');
+          final finalFile = File(item.savePath);
+          if (await finalFile.exists()) await finalFile.delete();
+          await tempRawFile.rename(item.savePath);
+        } else if (hasFFmpeg) {
           item.status = DownloadStatus.converting;
-          item.statusMessage = 'Convertendo áudio para MP3 (320kbps)...';
+          item.statusMessage = 'Processando áudio para $targetFmt ($bitrate)...';
           item.speedBytesPerSec = 0;
           onUpdate();
 
-          LogService.info('Convertendo áudio baixado para MP3: ${item.savePath}', tag: 'YouTube');
+          LogService.info('Convertendo áudio baixado para $targetFmt: ${item.savePath}', tag: 'YouTube');
 
           final converted = await FFmpegService.convertMedia(
             inputPath: tempRawFile.path,
             outputPath: item.savePath,
-            targetFormat: 'mp3',
-            audioBitrate: '320k',
+            targetFormat: targetFmt,
+            audioBitrate: bitrate,
           );
 
           if (await tempRawFile.exists()) {
@@ -219,6 +350,8 @@ class YouTubeService {
             throw Exception('Falha ao converter áudio com FFmpeg');
           }
         } else {
+          // Sem FFmpeg, salva o arquivo raw
+          LogService.warning('FFmpeg indisponível. Salvando áudio bruto direto.', tag: 'YouTube');
           if (await File(item.savePath).exists()) {
             await File(item.savePath).delete();
           }
@@ -279,53 +412,111 @@ class YouTubeService {
     item.speedBytesPerSec = 0;
     onUpdate();
 
-    LogService.info('Iniciando fluxo de vídeo YouTube para: ${item.fileName}', tag: 'YouTube');
+    LogService.info(
+      'Iniciando fluxo de vídeo YouTube para: ${item.fileName} (Qualidade: ${item.quality ?? "Melhor"})',
+      tag: 'YouTube',
+    );
 
     try {
-      final videoId = VideoId(item.url);
+      final videoId = parseVideoId(item.url) ?? VideoId(item.url);
       final manifest = await _yt.videos.streamsClient.getManifest(videoId);
-
-      // Prioriza muxed com melhor qualidade se disponível
-      final muxedStream = manifest.muxed.isNotEmpty
-          ? manifest.muxed.withHighestBitrate()
-          : null;
       final hasFFmpeg = await FFmpegService.isAvailable();
 
-      // Se tiver FFmpeg e stream de vídeo 1080p/720p separado
-      final videoOnlyStream = manifest.videoOnly.isNotEmpty
-          ? manifest.videoOnly.withHighestBitrate()
-          : null;
-      final audioOnlyStream = manifest.audioOnly.isNotEmpty
-          ? manifest.audioOnly.withHighestBitrate()
-          : null;
-
-      final bool useMuxing = hasFFmpeg &&
-          videoOnlyStream != null &&
-          audioOnlyStream != null &&
-          videoOnlyStream.size.totalBytes > (muxedStream?.size.totalBytes ?? 0);
-
-      if (useMuxing) {
-        LogService.info('Vídeo em alta resolução detectado. Utilizando muxing FFmpeg.', tag: 'YouTube');
-        await _downloadAndMuxHighRes(
-          item,
-          videoStream: videoOnlyStream,
-          audioStream: audioOnlyStream,
-          onUpdate: onUpdate,
-        );
-      } else {
-        final streamToDownload = muxedStream ?? videoOnlyStream;
-        if (streamToDownload == null) {
-          throw Exception('Nenhum fluxo de vídeo compatível disponível para este conteúdo');
+      // Procura pelo stream correspondente à qualidade ou streamId desejado
+      VideoStreamInfo? targetVideoStream;
+      if (item.selectedStreamId != null && item.selectedStreamId!.isNotEmpty) {
+        final tag = int.tryParse(item.selectedStreamId!);
+        if (tag != null) {
+          for (final s in manifest.video) {
+            if (s.tag == tag) {
+              targetVideoStream = s;
+              break;
+            }
+          }
         }
+      }
+
+      if (targetVideoStream == null && item.quality != null && item.quality!.isNotEmpty) {
+        final matches = manifest.video
+            .where((s) => s.videoQuality.name.toLowerCase() == item.quality!.toLowerCase())
+            .toList();
+        if (matches.isNotEmpty) {
+          // Prioriza container mp4 para compatibilidade com o formato final
+          targetVideoStream = matches.firstWhere(
+            (s) => s.container.name.toLowerCase() == 'mp4',
+            orElse: () => matches.first,
+          );
+        }
+      }
+
+      // Se não encontrou pela qualidade exata, seleciona a melhor resolução disponível
+      if (targetVideoStream == null && manifest.video.isNotEmpty) {
+        final sorted = manifest.video.toList()
+          ..sort((a, b) => b.videoResolution.height.compareTo(a.videoResolution.height));
+        targetVideoStream = sorted.firstWhere(
+          (s) => s.container.name.toLowerCase() == 'mp4',
+          orElse: () => sorted.first,
+        );
+      }
+
+      if (targetVideoStream == null) {
+        throw Exception('Nenhum fluxo de vídeo compatível disponível para este conteúdo');
+      }
+
+      // Se for stream com áudio e vídeo já juntos (Muxed)
+      if (targetVideoStream is MuxedStreamInfo) {
         LogService.info(
-          'Baixando fluxo direto (${streamToDownload.container.name}, ${streamToDownload.size.totalBytes} bytes)',
+          'Baixando fluxo direto muxed com áudio (${targetVideoStream.videoQuality.name}, ${targetVideoStream.container.name})',
           tag: 'YouTube',
         );
         await _downloadSingleStream(
           item,
-          streamInfo: streamToDownload,
+          streamInfo: targetVideoStream,
           onUpdate: onUpdate,
         );
+        return;
+      }
+
+      // Caso seja stream separado (video-only): requer áudio separado
+      final audioOnlyStream = manifest.audioOnly.isNotEmpty
+          ? manifest.audioOnly.withHighestBitrate()
+          : null;
+
+      if (hasFFmpeg && audioOnlyStream != null) {
+        LogService.info(
+          'Vídeo de alta definição (${targetVideoStream.videoQuality.name}) detectado. Baixando e mesclando com áudio via FFmpeg...',
+          tag: 'YouTube',
+        );
+        await _downloadAndMuxHighRes(
+          item,
+          videoStream: targetVideoStream,
+          audioStream: audioOnlyStream,
+          onUpdate: onUpdate,
+        );
+      } else {
+        // Fallback sem FFmpeg: tenta stream muxed se existir para não ficar sem áudio
+        final fallbackMuxed = manifest.muxed.isNotEmpty ? manifest.muxed.withHighestBitrate() : null;
+        if (fallbackMuxed != null) {
+          LogService.warning(
+            'FFmpeg não encontrado. Utilizando fluxo com áudio integrado (${fallbackMuxed.videoQuality.name}) para garantir som no vídeo.',
+            tag: 'YouTube',
+          );
+          await _downloadSingleStream(
+            item,
+            streamInfo: fallbackMuxed,
+            onUpdate: onUpdate,
+          );
+        } else {
+          LogService.warning(
+            'FFmpeg não encontrado e sem stream muxed. Baixando fluxo de vídeo disponível.',
+            tag: 'YouTube',
+          );
+          await _downloadSingleStream(
+            item,
+            streamInfo: targetVideoStream,
+            onUpdate: onUpdate,
+          );
+        }
       }
     } catch (e, stack) {
       item.status = DownloadStatus.failed;
@@ -348,7 +539,7 @@ class YouTubeService {
 
   static Future<void> _downloadSingleStream(
     DownloadItem item, {
-    required dynamic streamInfo,
+    required StreamInfo streamInfo,
     required void Function() onUpdate,
   }) async {
     item.totalBytes = streamInfo.size.totalBytes;
@@ -443,8 +634,8 @@ class YouTubeService {
 
   static Future<void> _downloadAndMuxHighRes(
     DownloadItem item, {
-    required dynamic videoStream,
-    required dynamic audioStream,
+    required VideoStreamInfo videoStream,
+    required AudioStreamInfo audioStream,
     required void Function() onUpdate,
   }) async {
     final totalBytes = videoStream.size.totalBytes + audioStream.size.totalBytes;

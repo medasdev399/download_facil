@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import '../../models/media_format_option.dart';
 import '../../services/youtube_service.dart';
 
 class UrlInputCard extends StatelessWidget {
@@ -8,11 +9,13 @@ class UrlInputCard extends StatelessWidget {
   final bool isDesktop;
   final bool fetchingPreview;
   final YouTubeMediaInfo? youtubePreview;
+  final DetectedMediaInfo? detectedMedia;
   final String? previewError;
   final String? customDirectory;
   final ValueChanged<String> onModeChanged;
   final ValueChanged<String> onUrlChanged;
   final VoidCallback onAddDownload;
+  final VoidCallback onOpenFormatSelector;
   final VoidCallback onPaste;
   final VoidCallback onPickDirectory;
 
@@ -23,56 +26,96 @@ class UrlInputCard extends StatelessWidget {
     required this.isDesktop,
     required this.fetchingPreview,
     required this.youtubePreview,
+    this.detectedMedia,
     required this.previewError,
     required this.customDirectory,
     required this.onModeChanged,
     required this.onUrlChanged,
     required this.onAddDownload,
+    required this.onOpenFormatSelector,
     required this.onPaste,
     required this.onPickDirectory,
   });
 
-  Widget _buildYouTubePreviewWidget(BuildContext context) {
-    final preview = youtubePreview!;
-    final minutes = (preview.duration?.inMinutes ?? 0);
-    final seconds = (preview.duration?.inSeconds ?? 0) % 60;
-    final durText = '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+  Widget _buildMediaPreviewWidget(BuildContext context) {
+    final title = detectedMedia?.title ?? youtubePreview?.title ?? 'Mídia Detectada';
+    final author = detectedMedia?.author ?? youtubePreview?.author;
+    final durText = detectedMedia?.formattedDuration ?? '';
+    final thumb = detectedMedia?.thumbnailUrl ?? youtubePreview?.thumbnailUrl;
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
 
     return Container(
-      padding: const EdgeInsets.all(10),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
-        borderRadius: BorderRadius.circular(8),
+        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: colorScheme.outlineVariant.withValues(alpha: 0.6)),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(6),
-            child: Image.network(
-              preview.thumbnailUrl,
-              width: 80,
-              height: 50,
-              fit: BoxFit.cover,
-              errorBuilder: (_, _, _) => const Icon(Icons.play_circle_fill, size: 48),
-            ),
+          Row(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: thumb != null && thumb.isNotEmpty
+                    ? Image.network(
+                        thumb,
+                        width: 86,
+                        height: 54,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, _, _) => const Icon(Icons.play_circle_fill, size: 48),
+                      )
+                    : Container(
+                        width: 86,
+                        height: 54,
+                        color: colorScheme.surfaceContainerHighest,
+                        child: const Icon(Icons.play_circle_fill, size: 36),
+                      ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      author != null ? '$author • $durText' : durText,
+                      style: theme.textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 4),
+                    if (detectedMedia != null)
+                      Text(
+                        '${detectedMedia!.videoFormats.length} vídeo(s) e ${detectedMedia!.audioFormats.length} áudio(s) disponíveis',
+                        style: TextStyle(
+                          color: colorScheme.primary,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  preview.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: onOpenFormatSelector,
+                  icon: const Icon(Icons.tune_rounded, size: 18),
+                  label: const Text('Escolher Tipos e Formatos (Resoluções / MP3)'),
                 ),
-                Text(
-                  '${preview.author} • $durText',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
         ],
       ),
@@ -160,13 +203,13 @@ class UrlInputCard extends StatelessWidget {
                 ),
               ),
             ],
-            // Pré-visualização de link do YouTube se detectado
+            // Pré-visualização de mídia se detectada
             if (fetchingPreview) ...[
               const SizedBox(height: 12),
               const LinearProgressIndicator(),
-            ] else if (youtubePreview != null) ...[
+            ] else if (detectedMedia != null || youtubePreview != null) ...[
               const SizedBox(height: 12),
-              _buildYouTubePreviewWidget(context),
+              _buildMediaPreviewWidget(context),
             ] else if (previewError != null) ...[
               const SizedBox(height: 10),
               Container(
@@ -224,4 +267,3 @@ class UrlInputCard extends StatelessWidget {
     );
   }
 }
-

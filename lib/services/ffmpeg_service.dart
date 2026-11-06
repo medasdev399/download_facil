@@ -182,20 +182,47 @@ class FFmpegService {
       tag: 'FFmpeg',
     );
     try {
-      final result = await Process.run('ffmpeg', [
+      // 1. Tenta cópia direta rápida (stream copy)
+      var result = await Process.run('ffmpeg', [
         '-y',
         '-i', videoPath,
         '-i', audioPath,
         '-c:v', 'copy',
         '-c:a', 'aac',
+        '-strict', 'experimental',
         outputPath,
       ]);
+
       if (result.exitCode == 0) {
-        LogService.info('Mesclagem FFmpeg concluída com sucesso: $outputPath', tag: 'FFmpeg');
+        LogService.info('Mesclagem direta FFmpeg concluída com sucesso: $outputPath', tag: 'FFmpeg');
+        return true;
+      }
+
+      LogService.warning(
+        'Cópia direta de codecs falhou (${result.exitCode}). Tentando remuxing com transcodificação compatível...',
+        tag: 'FFmpeg',
+        details: result.stderr.toString(),
+      );
+
+      // 2. Fallback com codificação H.264 universal para garantir compatibilidade
+      result = await Process.run('ffmpeg', [
+        '-y',
+        '-i', videoPath,
+        '-i', audioPath,
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-crf', '22',
+        '-c:a', 'aac',
+        '-b:a', '192k',
+        outputPath,
+      ]);
+
+      if (result.exitCode == 0) {
+        LogService.info('Mesclagem com recodificação FFmpeg concluída: $outputPath', tag: 'FFmpeg');
         return true;
       } else {
         LogService.error(
-          'Falha na mesclagem FFmpeg (exitCode: ${result.exitCode})',
+          'Falha definitiva na mesclagem FFmpeg (exitCode: ${result.exitCode})',
           tag: 'FFmpeg',
           details: result.stderr.toString(),
         );

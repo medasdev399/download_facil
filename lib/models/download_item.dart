@@ -21,6 +21,10 @@ class DownloadItem {
   Duration? duration;
   String? quality;
   String? statusMessage;
+  String? targetFormat;
+  String? audioBitrate;
+  String? selectedStreamId;
+  Map<String, String>? httpHeaders;
 
   DownloadItem({
     required this.id,
@@ -39,6 +43,10 @@ class DownloadItem {
     this.duration,
     this.quality,
     this.statusMessage,
+    this.targetFormat,
+    this.audioBitrate,
+    this.selectedStreamId,
+    this.httpHeaders,
   });
 
   double get progress => totalBytes > 0 ? (downloadedBytes / totalBytes).clamp(0.0, 1.0) : 0.0;

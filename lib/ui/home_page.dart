@@ -6,12 +6,16 @@ import 'package:path/path.dart' as p;
 
 import '../models/conversion_item.dart';
 import '../models/download_item.dart';
+import '../models/media_format_option.dart';
 import '../services/engine/download_engine.dart';
 import '../services/ffmpeg_service.dart';
 import '../services/log_service.dart';
+import '../services/media_detector_service.dart';
 import '../services/storage_resolver.dart';
 import '../services/youtube_service.dart';
 import 'dialogs/convert_media_dialog.dart';
+import 'dialogs/media_format_selector_dialog.dart';
+import 'widgets/browser_tab.dart';
 import 'widgets/conversion_card.dart';
 import 'widgets/download_card.dart';
 import 'widgets/ffmpeg_status_card.dart';
@@ -44,6 +48,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   Timer? _debounceTimer;
   int _previewRequestId = 0;
   YouTubeMediaInfo? _youtubePreview;
+  DetectedMediaInfo? _detectedMedia;
 
   // Variáveis da aba Conversor
   String? _selectedConvertSourcePath;
@@ -54,7 +59,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
     _initDefaultDirectory();
     _checkFFmpeg();
   }
@@ -119,9 +124,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
   Future<void> _executeUrlChanged(String text) async {
     final clean = text.trim();
-    if (!YouTubeService.isYouTubeUrl(clean)) {
-      if (_youtubePreview != null || _fetchingPreview || _previewError != null) {
+    if (clean.isEmpty || (!clean.startsWith('http://') && !clean.startsWith('https://'))) {
+      if (_detectedMedia != null || _youtubePreview != null || _fetchingPreview || _previewError != null) {
         setState(() {
+          _detectedMedia = null;
           _youtubePreview = null;
           _fetchingPreview = false;
           _previewError = null;
@@ -137,21 +143,118 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     });
 
     try {
-      final info = await YouTubeService.fetchInfo(clean);
+      final media = await MediaDetectorService.detectFromUrl(clean);
       if (!mounted || currentId != _previewRequestId) return;
+
+      YouTubeMediaInfo? ytInfo;
+      if (media != null && media.isYouTube) {
+        ytInfo = YouTubeMediaInfo(
+          id: clean,
+          title: media.title,
+          author: media.author ?? '',
+          duration: media.duration,
+          thumbnailUrl: media.thumbnailUrl ?? '',
+          videoQualities: media.videoFormats.map((f) => f.qualityTag ?? f.label).toList(),
+        );
+      }
+
       setState(() {
-        _youtubePreview = info;
+        _detectedMedia = media;
+        _youtubePreview = ytInfo;
         _fetchingPreview = false;
         _previewError = null;
       });
     } catch (e) {
       if (!mounted || currentId != _previewRequestId) return;
       setState(() {
+        _detectedMedia = null;
         _youtubePreview = null;
         _fetchingPreview = false;
         _previewError = YouTubeService.formatErrorMessage(e);
       });
     }
+  }
+
+  Future<void> _openFormatSelectorForCurrentUrl() async {
+    final url = _urlController.text.trim();
+    if (url.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Insira uma URL primeiro.')),
+      );
+      return;
+    }
+
+    DetectedMediaInfo? media = _detectedMedia;
+    if (media == null) {
+      setState(() => _fetchingPreview = true);
+      try {
+        media = await MediaDetectorService.detectFromUrl(url);
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Erro ao analisar mídia: $e')),
+          );
+        }
+      } finally {
+        if (mounted) setState(() => _fetchingPreview = false);
+      }
+    }
+
+    if (media == null || !mounted) return;
+
+    final result = await MediaFormatSelectorDialog.show(
+      context,
+      mediaInfo: media,
+      defaultDirectory: _customDirectory,
+    );
+
+    if (result != null && mounted) {
+      final isYouTube = media.isYouTube || YouTubeService.isYouTubeUrl(media.url);
+      final streamIdIsUrl = result.option.streamId != null &&
+          (result.option.streamId!.startsWith('http://') || result.option.streamId!.startsWith('https://'));
+      final streamUrl = (!isYouTube && streamIdIsUrl)
+          ? result.option.streamId!
+          : media.url;
+
+      final newItem = DownloadItem(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        url: streamUrl,
+        fileName: result.fileName,
+        savePath: result.savePath,
+        mediaType: result.mediaType,
+        thumbnailUrl: media.thumbnailUrl,
+        author: media.author,
+        duration: media.duration,
+        quality: result.option.qualityTag,
+        targetFormat: result.option.extension,
+        audioBitrate: result.option.qualityTag,
+        selectedStreamId: result.option.streamId,
+        httpHeaders: result.option.httpHeaders,
+      );
+
+      LogService.info(
+        'Adicionando download com formato selecionado: "${result.fileName}" (${result.option.label})',
+        tag: 'UI',
+      );
+
+      setState(() {
+        _downloads.insert(0, newItem);
+        _urlController.clear();
+        _detectedMedia = null;
+        _youtubePreview = null;
+        _previewError = null;
+      });
+
+      _startOrResumeItem(newItem);
+    }
+  }
+
+  void _handleDownloadFromBrowser(DownloadItem item) {
+    setState(() {
+      _downloads.insert(0, item);
+      _tabController.animateTo(0);
+    });
+    _startOrResumeItem(item);
   }
 
   Future<void> _pasteFromClipboard() async {
@@ -183,6 +286,12 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       return;
     }
 
+    // Se temos mídias detectadas com múltiplos formatos, abre o seletor para escolha personalizada
+    if (_detectedMedia != null && _detectedMedia!.totalOptionsCount > 1) {
+      _openFormatSelectorForCurrentUrl();
+      return;
+    }
+
     final isYouTube = YouTubeService.isYouTubeUrl(url);
     DownloadMediaType mediaType = DownloadMediaType.general;
 
@@ -195,16 +304,58 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     }
 
     String fileName;
-    if (_youtubePreview != null) {
+    String? qualityTag;
+    String? targetFmt;
+    String effectiveUrl = url;
+    Map<String, String>? streamHeaders;
+    String? streamId;
+
+    if (_detectedMedia != null) {
+      final safeTitle = _sanitizeFileName(_detectedMedia!.title);
+      final isYouTubeMedia = _detectedMedia!.isYouTube || isYouTube;
+
+      if (mediaType == DownloadMediaType.music) {
+        final opt = _detectedMedia!.audioFormats.isNotEmpty ? _detectedMedia!.audioFormats.first : null;
+        targetFmt = opt?.extension ?? 'mp3';
+        qualityTag = opt?.qualityTag ?? '320k';
+        fileName = '$safeTitle.$targetFmt';
+        final optStreamId = opt?.streamId;
+        if (optStreamId != null) {
+          streamId = optStreamId;
+          if (!isYouTubeMedia &&
+              (optStreamId.startsWith('http://') || optStreamId.startsWith('https://'))) {
+            effectiveUrl = optStreamId;
+          }
+        }
+        streamHeaders = opt?.httpHeaders;
+      } else {
+        final opt = _detectedMedia!.videoFormats.isNotEmpty ? _detectedMedia!.videoFormats.first : null;
+        targetFmt = opt?.extension ?? 'mp4';
+        qualityTag = opt?.qualityTag ?? '1080p';
+        fileName = '$safeTitle.$targetFmt';
+        final optStreamId = opt?.streamId;
+        if (optStreamId != null) {
+          streamId = optStreamId;
+          if (!isYouTubeMedia &&
+              (optStreamId.startsWith('http://') || optStreamId.startsWith('https://'))) {
+            effectiveUrl = optStreamId;
+          }
+        }
+        streamHeaders = opt?.httpHeaders;
+      }
+    } else if (_youtubePreview != null) {
       final safeTitle = _sanitizeFileName(_youtubePreview!.title);
       final ext = mediaType == DownloadMediaType.music ? 'mp3' : 'mp4';
+      targetFmt = ext;
       fileName = '$safeTitle.$ext';
     } else {
       fileName = _extractFileName(url);
       if (mediaType == DownloadMediaType.music && !fileName.endsWith('.mp3')) {
         fileName = '${p.withoutExtension(fileName)}.mp3';
+        targetFmt = 'mp3';
       } else if (mediaType == DownloadMediaType.video && !fileName.endsWith('.mp4')) {
         fileName = '${p.withoutExtension(fileName)}.mp4';
+        targetFmt = 'mp4';
       }
     }
 
@@ -221,24 +372,30 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
     final newItem = DownloadItem(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
-      url: url,
+      url: effectiveUrl,
       fileName: fileName,
       savePath: savePath,
       mediaType: mediaType,
-      thumbnailUrl: _youtubePreview?.thumbnailUrl,
-      author: _youtubePreview?.author,
-      duration: _youtubePreview?.duration,
+      thumbnailUrl: _detectedMedia?.thumbnailUrl ?? _youtubePreview?.thumbnailUrl,
+      author: _detectedMedia?.author ?? _youtubePreview?.author,
+      duration: _detectedMedia?.duration ?? _youtubePreview?.duration,
+      quality: qualityTag,
+      targetFormat: targetFmt,
+      audioBitrate: qualityTag,
+      selectedStreamId: streamId,
+      httpHeaders: streamHeaders,
     );
 
     LogService.info(
       'Adicionando download: "$fileName"',
       tag: 'UI',
-      details: 'URL: $url\nDestino: $savePath\nTipo: ${mediaType.name}',
+      details: 'URL: $url\nDestino: $savePath\nTipo: ${mediaType.name}\nQualidade: $qualityTag',
     );
 
     setState(() {
       _downloads.insert(0, newItem);
       _urlController.clear();
+      _detectedMedia = null;
       _youtubePreview = null;
       _previewError = null;
     });
@@ -465,6 +622,31 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     return _downloads;
   }
 
+  void _showAboutAppDialog() {
+    showAboutDialog(
+      context: context,
+      applicationName: 'Download Fácil',
+      applicationVersion: '1.1.0',
+      applicationIcon: const CircleAvatar(
+        backgroundColor: Colors.indigo,
+        child: Icon(Icons.bolt_rounded, color: Colors.white),
+      ),
+      applicationLegalese: '© 2026 Gabriel Moreno Medeiros. Todos os direitos reservados.',
+      children: const [
+        SizedBox(height: 16),
+        Text(
+          'Desenvolvedor: Gabriel Moreno Medeiros',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
+        SizedBox(height: 8),
+        Text(
+          'Download Fácil é um aplicativo completo para download multithread, '
+          'captura de fluxos de mídia, conversão com FFmpeg e navegação integrada.',
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -483,6 +665,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
               icon: const Icon(Icons.download_rounded),
               text: 'Downloads (${_downloads.length})',
             ),
+            const Tab(
+              icon: Icon(Icons.public_rounded),
+              text: 'Navegador Web',
+            ),
             Tab(
               icon: const Icon(Icons.transform_rounded),
               text: 'Conversor (${_conversions.length})',
@@ -490,6 +676,11 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'Sobre o projeto',
+            icon: const Icon(Icons.info_outline_rounded),
+            onPressed: _showAboutAppDialog,
+          ),
           ValueListenableBuilder<int>(
             valueListenable: LogService.errorCountNotifier,
             builder: (context, errorCount, _) {
@@ -517,6 +708,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         controller: _tabController,
         children: [
           _buildDownloadsTab(),
+          BrowserTab(
+            defaultDirectory: _customDirectory,
+            onStartDownload: _handleDownloadFromBrowser,
+          ),
           _buildConverterTab(),
         ],
       ),
@@ -537,11 +732,13 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           isDesktop: isDesktop,
           fetchingPreview: _fetchingPreview,
           youtubePreview: _youtubePreview,
+          detectedMedia: _detectedMedia,
           previewError: _previewError,
           customDirectory: _customDirectory,
           onModeChanged: (mode) => setState(() => _selectedMode = mode),
           onUrlChanged: _onUrlChanged,
           onAddDownload: _addDownload,
+          onOpenFormatSelector: _openFormatSelectorForCurrentUrl,
           onPaste: _pasteFromClipboard,
           onPickDirectory: _pickDirectory,
         );

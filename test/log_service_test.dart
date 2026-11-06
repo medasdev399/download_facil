@@ -3,6 +3,8 @@ import 'package:download_facil/models/log_entry.dart';
 import 'package:download_facil/services/log_service.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   setUp(() {
     LogService.clear();
   });

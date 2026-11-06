@@ -128,18 +128,39 @@ class DownloadCard extends StatelessWidget {
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
-                          if (item.mediaType == DownloadMediaType.music)
+                          if (item.quality != null && item.quality!.isNotEmpty) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                item.quality!,
+                                style: TextStyle(
+                                  color: Theme.of(context).colorScheme.primary,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
+                          if (item.mediaType == DownloadMediaType.music) ...[
+                            const SizedBox(width: 4),
                             const Chip(
                               label: Text('Música', style: TextStyle(fontSize: 10)),
                               visualDensity: VisualDensity.compact,
                               padding: EdgeInsets.zero,
-                            )
-                          else if (item.mediaType == DownloadMediaType.video)
+                            ),
+                          ] else if (item.mediaType == DownloadMediaType.video) ...[
+                            const SizedBox(width: 4),
                             const Chip(
                               label: Text('Vídeo', style: TextStyle(fontSize: 10)),
                               visualDensity: VisualDensity.compact,
                               padding: EdgeInsets.zero,
                             ),
+                          ],
                         ],
                       ),
                       const SizedBox(height: 2),
