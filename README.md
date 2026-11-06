@@ -13,6 +13,7 @@
 ## 👨‍💻 Desenvolvedor
 
 - **Nome:** Gabriel Moreno Medeiros
+- **E-mail:** [gabrielmm399@gmail.com](mailto:gabrielmm399@gmail.com)
 - **Projeto:** Download Fácil
 - **Versão:** 1.1.0
 

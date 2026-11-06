@@ -1,6 +1,6 @@
 # 🏛️ Documentação de Arquitetura - Download Fácil
 
-**Desenvolvedor:** Gabriel Moreno Medeiros  
+**Desenvolvedor:** Gabriel Moreno Medeiros (<gabrielmm399@gmail.com>)  
 **Versão da Aplicação:** 1.1.0  
 **Stack Principal:** Flutter, Dart, Dio, FFmpeg, youtube_explode_dart  
 
@@ -107,3 +107,4 @@ O `FFmpegService` atua como uma ponte assíncrona para o utilitário de linha de
 
 Projeto concebido e desenvolvido por **Gabriel Moreno Medeiros**.  
 Licenciado sob a Licença MIT.
+

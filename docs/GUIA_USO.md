@@ -1,6 +1,6 @@
 # 📖 Guia de Uso - Download Fácil
 
-**Autor:** Gabriel Moreno Medeiros  
+**Autor:** Gabriel Moreno Medeiros (<gabrielmm399@gmail.com>)  
 **Versão:** 1.1.0  
 
 ---
@@ -54,3 +54,4 @@
 ## 5. Informações do Projeto
 
 - Clique no ícone de informação `(i)` na barra superior para conferir os dados da versão e a autoria de **Gabriel Moreno Medeiros**.
+

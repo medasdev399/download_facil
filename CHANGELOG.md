@@ -41,3 +41,4 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Integração preliminar com `youtube_explode_dart`.
 - Seleção de diretório de destino local com `file_picker` e `path_provider`.
 - Interface inicial com cards de status de download (pendente, baixando, pausado, concluído, erro).
+

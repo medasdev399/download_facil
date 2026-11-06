@@ -1,10 +1,10 @@
 name: download_facil
 description: "Download Fácil - Gerenciador avançado de downloads multithread e conversor de mídia para Desktop e Web."
-# Desenvolvedor: Gabriel Moreno Medeiros
+# Desenvolvedor: Gabriel Moreno Medeiros <gabrielmm399@gmail.com>
 # Repositório: https://github.com/medasdev/download_facil
 publish_to: 'none'
 
-version: 1.1.0+2
+version: 1.1.0+3
 
 environment:
   sdk: ^3.13.2

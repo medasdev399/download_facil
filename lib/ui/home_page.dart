@@ -635,7 +635,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       children: const [
         SizedBox(height: 16),
         Text(
-          'Desenvolvedor: Gabriel Moreno Medeiros',
+          'Desenvolvedor: Gabriel Moreno Medeiros (gabrielmm399@gmail.com)',
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
         SizedBox(height: 8),
